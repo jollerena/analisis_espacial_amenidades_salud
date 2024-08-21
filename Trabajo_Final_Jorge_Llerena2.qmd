@@ -1,0 +1,595 @@
+---
+title: "Trabajo Final Curso de Estadística y Econometría Espacial"
+author: "Jorge Llerena"
+date: "2005-08-21"
+format: docx
+editor: visual
+---
+
+## 
+
+## Actividad 1
+
+Primero se procede a cargar las librerías necesarias para la identificación del número de amenidades en la provincia de Chimborazo:
+
+```{r, message=FALSE}
+# Instalar y cargar los paquetes necesarios # install.packages(c("sf", "tidyverse", "osmdata","spdep","cowplot)) 
+library(sf) 
+library(tidyverse) 
+library(osmdata) 
+library(spdep) 
+library(cowplot)
+library(lattice)
+```
+
+A continuación se aplican las herramientas de *"OpenStreetMaps"* bajo la temática de *"Boundary Box"* para encontrar las amenidades referentes a hospitales:
+
+```{r, message=FALSE}
+  bbox_riobamba <- getbb("Riobamba, Ecuador") 
+  
+  osm_query_riobamba <- opq(bbox_riobamba) %>% 
+    add_osm_feature(key = "amenity", value = "hospital") %>% 
+    osmdata_sf()
+    
+  puntos_riobamba <- osm_query_riobamba$osm_points 
+```
+
+Ahora se coloca en un mapa los puntos obtenidos con la importación de la base *"GEODATABASE_NACIONAL_2021/GEODATABASE_NACIONAL_2021.gdb":*
+
+```{r, message=FALSE}
+st_layers("../Data/GEODATABASE_NACIONAL_2021/GEODATABASE_NACIONAL_2021/GEODATABASE_NACIONAL_2021.gdb/")
+
+# Cargar y preparar los datos de zonas censales
+zonas_nacional <- st_read("../Data/GEODATABASE_NACIONAL_2021/GEODATABASE_NACIONAL_2021/GEODATABASE_NACIONAL_2021.gdb/", layer = "zon_a")
+
+chimborazo_zonas <- zonas_nacional %>% filter(str_detect(zon, "^06"))
+```
+
+Una vez obtenidos los puntos, se procede a obtener el mapa de la provincia con la ayuda de la librería de `ggplot():`
+
+```{r, echo=FALSE, fig.height=6, fig.dpi = 300}
+ggplot()+
+  geom_sf(data = chimborazo_zonas)+
+  geom_sf(data = puntos_riobamba)+
+  labs(title = "Distribución de hospitales en la Provincia de Chimborazo",
+       subtitle = "Fuente:OpenStreetMaps")+
+  theme_minimal()
+```
+
+A continuación se importa el archivo *"01_2022_CPV_Estructura_poblacional.xlsx"* referente a los datos censales en el Ecuador del año 2022 con la librería `readxl`:
+
+```{r, message=FALSE}
+library(readxl)
+
+excel_sheets("../Data/01_2022_CPV_Estructura_poblacional.xlsx")
+
+pob_nacional <- read_excel("../Data/01_2022_CPV_Estructura_poblacional.xlsx", sheet = "1.2", range = "B10:G1299")
+
+names(pob_nacional) <- c("provincia", "canton", "parroquia", "total_nacional",
+                          "hombres", "mujeres")
+
+```
+
+A este documento se procede a aplicar el análisis exploratorio de datos *(EDA en inglés)* a fin de conseguir datos más faciles de entender sobre el Censo del 2022 en el Ecuador:
+
+```{r, message=FALSE}
+pob_nacional <- pob_nacional %>% filter(!is.na(provincia),
+                         str_detect(parroquia, "^Total|Nacional", negate = T)) 
+
+pob_nacional <- pob_nacional %>% 
+  mutate(across(c(provincia, canton, parroquia), str_to_upper))
+```
+
+Antes de realizar la actividad 3, es necesario cruzar la base del censo 2020 con la codificación de la *"División Política Administrativa (DPA)"* de provincias, cantones y parroquias del Ecuador cuya fuente es del *"Instituto Ecuatoriano de Estadística y Censos (INEC)"*; para lo cual se procede a su respectiva importación:
+
+```{r, message = FALSE}
+dpa_nacional <- read_excel("../Data/CODIFICACIÓN_2022.xlsx", sheet = "CODIGOS")
+```
+
+A continuación se procede a unificar la información de ambas bases por medio de las funciones de `join`:
+
+```{r, message = FALSE}
+pob_nacional <- pob_nacional %>% left_join(dpa_nacional, by = c("provincia" = "DPA_DESPRO",
+                                        "canton" = "DPA_DESCAN",
+                                        "parroquia" = "DPA_DESPAR"))
+```
+
+## Actividad 2
+
+A continuación se procede a la unión de polígonos de zonas censales a nivel de parroquias en la provincia de Chimborazo dentro de la parroquia *"Riobamba"*:
+
+```{r, message = FALSE}
+chimborazo_zonas <- chimborazo_zonas %>% 
+  mutate(DPA_PARROQ = str_sub(zon, 1, 6))
+
+parroquias_chimb <- chimborazo_zonas %>% group_by(DPA_PARROQ) %>%
+  summarise(Shape = st_union(Shape))
+```
+
+Se unen los datos de parroquias de Chimborazo con la población nacional a través de la función `left_join()`:
+
+```{r, message = FALSE}
+parroquias_chimb <- parroquias_chimb %>% left_join(pob_nacional)
+```
+
+## Actividad 3
+
+Ahora se procede al cálculo del número total de amenidades de zonas censales a nivel de parroquias en la provincia de Chimborazo dentro de la parroquia *"Riobamba"*; para lo cual se va a usar el siguiente mapa de calor con la función `ggplot()`:
+
+```{r, message = FALSE, fig.height=6, fig.dpi = 300}
+parroquias_chimb %>% ggplot()+
+  geom_sf(aes(fill = log(total_nacional)))+
+  geom_sf(data = puntos_riobamba)+
+  scale_fill_gradient(low = "yellow", high = "brown")+
+  labs(title = "Densidad Poblacional de la Provincia de Chimborazo",
+       caption = "Fuente: INEC")
+```
+
+Como se puede observar en este mapa de calor, la mayor densidad de hospitales se encuentra en la capital de la provincia de Chimborazo, la ciudad de Riobamba ya que la mayor cantidad de puntos están concentrados en esa parroquia así como también por el color café intenso del gráfico.
+
+## Actividad 4
+
+A continuación se calcula el ratio del número de amenidades seleccionadas en relación con el número de habitantes por cada 1000 habitantes en cada parroquia de la provincia de Chimborazo:
+
+```{r, message = FALSE}
+puntos_riobamba <- st_transform(x = puntos_riobamba, crs = st_crs(parroquias_chimb))
+
+parroquias_puntos_chimb <- st_join(x = puntos_riobamba, y = parroquias_chimb, join = st_within)
+
+parroquias_puntos_chimb <- parroquias_puntos_chimb %>% count(DPA_PARROQ, 
+                                                 name = "hospitales") %>% 
+  as_tibble()
+
+parroquias_chimb <- parroquias_chimb %>% left_join(parroquias_puntos_chimb)
+
+parroquias_chimb <- parroquias_chimb %>% mutate(hospitales = replace_na(hospitales, 0))
+```
+
+En el conteo de puntos por parroquia dentro de la provincia de Chimborazo, se puede observar que la mayor parte de los puntos se concentran en "Riobamba"; la cual es la cabecera cantonal y la capital provincial de dicha provincia con 111 puntos. Por otro lado, la parroquia "San Luis" concentra apenas cinco puntos por ser una parroquia rural.
+
+Una vez obtenidos estos datos, se procede a calcular el indicador con su respectivo mapa de calor:
+
+```{r, message = FALSE}
+
+parroquias_chimb <- parroquias_chimb %>% mutate(indicador = (hospitales/total_nacional)*1000)
+```
+
+```{r, message = FALSE, fig.height=6, fig.dpi = 300}
+parroquias_chimb %>% ggplot()+
+  geom_sf(aes(fill = log(indicador)))+
+  scale_fill_gradient(low = "yellow", high = "brown")+
+  labs(title = "Indicador de Amenidades de Salud por cada 1000 habitantes",
+       caption = "Fuente: INEC")
+```
+
+Con respecto a los resultados obtenidos, se puede ver que la parroquia de Riobamba tiene un indicador de amenidades de 0.5876405; mientras que la parroquia de San Luis tiene un indicador de 0.2562788. Con esto se puede observar que hay mayor facilidad de acceder a un hospital o centro de salud en la capital de la provincia de Chimborazo que en la parroquia San Luis.
+
+## Actividad 5
+
+Antes de calcular el Índice de Moran se debe obtener la matriz de vecindad binaria. Las matrices de vecindad son fundamentales para análisis espaciales, ya que definen las relaciones espaciales entre las observaciones al contener los pesos espaciales correspondientes a una lista de vecinos.
+
+```{r, message = FALSE}
+vecinos_chimb <- poly2nb(parroquias_chimb, queen = T)
+vecinos_pesos_chimb <- nb2listw(vecinos_chimb, style = "W")
+matriz_chimb <- listw2mat(vecinos_pesos_chimb)
+```
+
+Ahora se procede a hacer la Matriz de Pesos Espaciales de Contigüidad con la librería `lattice`:
+
+```{r, message = FALSE, fig.height=6, fig.dpi = 300}
+levelplot(t(matriz_chimb[1:50,1:50]),
+          scales = list(y = list(at = seq(10, 50, by = 10),
+                                 labels = seq(10, 50, by = 10))),
+          main = "Matriz de Pesos Espaciales Basada en Contigüidad")
+```
+
+Este gráfico representa la relación de cada unidad espacial dentro del sector censal, indicando si un elemento en cuestión tiene vecinos que influyan en su desempeño económico y dependiendo del nivel de cercanía, mayor peso se le asignará
+
+Ahora se calcula el índice de Moran *I.* El índice de Moran nos permite detectar la autocorrelación espacial, que es la similitud de valores en una ubicación espacial.
+
+```{r, message = FALSE}
+# Calcular índice de Moran
+moran_chimb <- moran.test(parroquias_chimb$hospitales, vecinos_pesos_chimb, alternative = "two.sided")
+
+moran_chimb
+```
+
+De acuerdo al Índice de Moran, no existe autocorrelación espacial entre el número de hospitales dentro de la provincia de Chimborazo al tener un p-valor de 0.6597; el cual es superior al de 0.05. El estadístico de Moran muestra un valor de -2.281750e-02; el cual es muy pequeño y negativo al igual que la esperanza y la varianza con -1.851852e-02 y 9.532298e-05, valores muy alejados de ser una distribución normal.
+
+Ahora se procede a calcular el Índice de Moran local:
+
+```{r, message = FALSE}
+local_moran_chimb <- localmoran(parroquias_chimb$hospitales, listw = vecinos_pesos_chimb)
+
+local_moran_chimb
+```
+
+De acuerdo a los resultados obtenidos, la probabilidad de que Z se desvíe del valor esperado es baja; indicando que existe autocorrelación local en cada polígono con un p-valor de 0.05.
+
+A continuación se va a observar la composición de los clústeres en base el Índice de Moran Local:
+
+```{r, message = FALSE}
+
+head(local_moran_chimb)
+
+clusters_chimb <- attributes(local_moran_chimb)$quadr
+
+parroquias_chimb <- bind_cols(parroquias_chimb, clusters_chimb)
+
+class(local_moran_chimb)
+
+local_moran_chimb <- local_moran_chimb %>% as.tibble()
+
+parroquias_chimb <- parroquias_chimb %>% bind_cols(local_moran_chimb)
+```
+
+Así, casi todos los clústeres poseen áreas con valores bajos rodeadas de vecinos con valores bajos dentro de la provincia de Chimborazo.
+
+A continuación se crean diferentes visualizaciones para interpretar los resultados del índice de Moran Local:
+
+### 1) Mapa del Número Promedio de Hospitales en la Provincia de Chimborazo
+
+```{r, message = FALSE, fig.height=6, fig.dpi = 300}
+plot_1_chimb <- parroquias_chimb %>% 
+  ggplot() + 
+  geom_sf(aes(fill = hospitales)) +
+  scale_fill_viridis_c(option = "A")
+
+plot_1_chimb
+```
+
+En este gráfico se puede divisar la distribución espacial de la variable *"hospitales"* donde se ve una mayor concentración en la parroquia "Riobamba" con más de 100 hospitales y centros de salud.
+
+### 2) Mapa del Índice de Moran Local en la Provincia de Chimborazo
+
+```{r, message = FALSE, fig.height=6, fig.dpi = 300}
+
+parroquias_chimb %>% mutate(Ii = as.numeric(Ii)) %>% str()
+
+plot_2_chimb <- parroquias_chimb %>% 
+  ggplot() + 
+  geom_sf(aes(fill = as.numeric(Ii))) +
+  scale_fill_viridis_c(option = "B")
+
+plot_2_chimb
+```
+
+Con este gráfico se puede observar que cada polígono asociado a un hospital dentro de la parroquia de *"Riobamba"* va a tener mayor autocorrelación positiva en comparación con el resto de parroquias relacionadas con cada polígono dentro de Chimborazo.
+
+### 3) Mapa de Significancia del Índice de Moran Local en la Provincia de Chimborazo
+
+```{r, message = FALSE, fig.height=6, fig.dpi = 300}
+
+plot_3_chimb <- parroquias_chimb %>% 
+  mutate(Z.Ii = as.numeric(Z.Ii),
+         Z.Ii = cut(Z.Ii, breaks = c(-Inf, -1.65, 1.65, Inf), labels = c("ACS Negativa", "Sin ACS", "ACS Positiva"))) %>% 
+  ggplot() + 
+  geom_sf(aes(fill = Z.Ii)) +
+  scale_fill_viridis_d(option = "G")
+
+plot_3_chimb
+
+
+```
+
+Dentro de la provincia de Chimborazo, se puede ver que casi en su totalidad no poseen autocorrelación; mientras que la parroquia "Riobamba" tiene autocorrelación positiva y sus parroquias aledañas tienen autocorrelación negativa.
+
+### 4) Clústers en la Provincia de Chimborazo
+
+```{r, message = FALSE, fig.height=6, fig.dpi = 300}
+
+plot_4_chimb <-  parroquias_chimb %>% 
+  mutate(mean = if_else(between(as.numeric(Z.Ii), -1.65, 1.65),"No significant",mean)) %>% 
+  ggplot() + 
+  geom_sf(aes(fill = mean)) +
+  scale_fill_viridis_d(option = "G")
+
+
+plot_4_chimb
+```
+
+Con base al gráfico, se puede ver que casi toda la provincia de Chimborazo no es estadísticamente significativa con base en el Índice de Moran Local. Sin embargo en la parroquia de *"Riobamba"* existen clústeres de relación *"alta-baja"* y *"alta-alta"*.
+
+## Actividad 6
+
+A continuación se crea la base de la Provincia de Pichincha:
+
+```{r, message = FALSE}
+st_layers("../Data/GEODATABASE_NACIONAL_2021/GEODATABASE_NACIONAL_2021/GEODATABASE_NACIONAL_2021.gdb/")
+
+# Cargar la capa "sec_a"
+zonas2 <- st_read("../Data/GEODATABASE_NACIONAL_2021/GEODATABASE_NACIONAL_2021/GEODATABASE_NACIONAL_2021.gdb/",
+                 layer = "sec_a")
+
+# Filtrar por la parroquia de interés
+pichincha <- zonas2 %>% 
+  filter(str_detect(parroquia, "^17"))
+
+pichincha %>% pull(Shape) %>% map_dbl(length) %>% table()
+
+# Remover geometrías vacías
+pichincha <- pichincha %>% mutate(tam = map_dbl(Shape, length))
+```
+
+Ahora se elabora el mapa inicial de la parroquia 170550 que es Sangolquí:
+
+```{r, message = FALSE, fig.height=6, fig.dpi = 300}
+mapa_sangolqui <- pichincha %>% 
+  filter(parroquia == "170550") %>% 
+  ggplot() +
+  geom_sf(fill = "yellow", color = "brown") +
+  labs(title = "Mapa Preliminar del Cantón Sangolquí",
+       subtitle = "Provincia de Pichincha",
+       caption = "Fuente:INEC")
+  theme_minimal()
+
+mapa_sangolqui
+```
+
+A continuación se identifica los vecinos de la Universidad de las Fuerzas Armadas-ESPE:
+
+```{r, message = FALSE}
+# Coordenadas de la ESPE en WGS84
+espe <- tibble(lat = -0.33405, long =  -78.45217) %>% 
+  st_as_sf(coords = c("long", "lat"), crs = 4326) %>% 
+  st_transform(32717)
+
+# Encontrar intersecciones con la ESPE
+inter <- st_intersects(espe, pichincha)
+
+pichincha[unlist(inter), ] %>% pull(sec)
+
+# Identificar vecinos
+pichincha <- pichincha %>% 
+  mutate(centro = if_else(sec == "170550015004", true = "Universidad de las Fuerzas Armadas", false =  NA_character_))
+
+```
+
+A continuación se crea el mapa con vecinos de la ESPE:
+
+```{r, message = FALSE, fig.height=6, fig.dpi = 300}
+# Crear mapa con vecinos de la ESPE
+mapa_vecinos_espe <- pichincha %>%
+  filter(parroquia == "170550") %>% 
+  ggplot() +
+  geom_sf(aes(fill = centro)) +
+  theme_minimal()
+
+# Mostrar el mapa
+mapa_vecinos_espe
+```
+
+Se procede a elaborar la matriz de vecindad de los polígonos para Sangolquí:
+
+```{r}
+# Crear matriz de vecindad
+sangolqui <- pichincha %>%
+  filter(parroquia == "170550") 
+
+# Crear la lista de vecinos usando el modelo queen
+nb <- spdep::poly2nb(sangolqui,queen = T) 
+```
+
+De acuerdo a estos resultados, se puede estimar que tiene un número de regiones en total de 253 y que su número promedio de conexiones son de 5.620553.
+
+Ahora se procede a visualizar los vecinos de un polígono específico *(ID: 170550015004)*:
+
+```{r, message = FALSE}
+id <- "170550015004" # ID del área
+
+# Identificar posición del ID
+pos <- which(sangolqui$sec == id)
+sangolqui[pos, ]
+# Asignar categorías de vecinos
+sangolqui$neighbors <- "Otros"
+sangolqui$neighbors[pos] <- "Universidad de las Fuerzas Armadas"
+sangolqui$neighbors[nb[[pos]]] <- "Vecinos"
+table(sangolqui$neighbors)
+```
+
+Ahora se crea el gráfico con los vecinos:
+
+```{r, message = FALSE, fig.height=6, fig.dpi = 300}
+mapa_sangolqui_vecinos <- sangolqui %>%
+  ggplot() +
+  geom_sf(aes(fill = neighbors)) +
+  theme_minimal() 
+
+mapa_sangolqui_vecinos
+```
+
+A continuación se hace zoom en las coordenadas de la Universidad de las Fuerzas Armadas-ESPE:
+
+```{r, message = FALSE, fig.height=6, fig.dpi = 300}
+# Definir límites de zoom para la ESPE
+zoom_to <- c(-78.45217, -0.33405)  # Latitud y Longitud correctas
+lon_bounds <- c(-78.467, -78.437)  # Ajustar según sea necesario
+lat_bounds <- c(-0.347, -0.317)  
+
+sangolqui <- st_transform(sangolqui, crs = 4326)
+
+# Crear el gráfico con zoom
+mapa_sangolqui_zoom <- sangolqui %>%
+  ggplot() +
+  geom_sf(aes(fill = neighbors)) +
+  theme_minimal() +
+  coord_sf(xlim = lon_bounds, ylim = lat_bounds)
+
+# Mostrar el gráfico con zoom
+mapa_sangolqui_zoom
+```
+
+A continuación se cargan las capas disponibles en la geodatabase y seleccionar la capa de zonas censales de Pichincha. Luego, se van a filtrar estos datos para seleccionar solo los sectores censales de Sangolquí:
+
+```{r, message = FALSE}
+
+# Cargar la capa "zon_a" que contiene los sectores censales
+zonas3 <- st_read("../Data/GEODATABASE_NACIONAL_2021/GEODATABASE_NACIONAL_2021/GEODATABASE_NACIONAL_2021.gdb/",
+                 layer = "zon_a")
+
+# Filtrar por la parroquia de interés (parroquias de Sangolquí que comienzan con "170550")
+sangolqui_zonas <- zonas3 %>% 
+  filter(str_detect(zon, "^170550")) 
+
+# Crear un objeto de ejemplo para la ESPE
+zoom_to2 <- "170550015"
+espe2 <- sangolqui_zonas %>% filter(zon == zoom_to2)
+
+# Crear un buffer de 0.5 km alrededor del polígono de la ESPE
+buffer_espe <- st_buffer(espe2, dist = 500)
+
+class(buffer_espe$Shape)
+
+# Definir los límites del mapa para el zoom
+lon_bounds2 <- c(-78.467, -78.437)  # Ajustar según sea necesario
+lat_bounds2 <- c(-0.347, -0.317)  
+
+# Transformar las coordenadas de las zonas para la visualización
+
+sangolqui_4326 <- st_transform(sangolqui_zonas, crs = 4326)
+
+```
+
+Luego se va a mostrar el buffer de la ESPE en un mapa:
+
+```{r, message = FALSE, fig.height=6, fig.dpi = 300}
+# Mostrar el buffer en un mapa
+
+class(espe2$Shape)
+
+ggplot() +
+  geom_sf(data = sangolqui_4326, color = "red", size = 1) +
+  geom_sf(data = buffer_espe, fill = "yellow", alpha = 0.5) +
+  theme_minimal() +
+  ggtitle("Buffer de 0.5 km alrededor del Polígono de la ESPE") +
+  coord_sf(xlim = lon_bounds2, ylim = lat_bounds2)
+```
+
+Ahora se aplica el buffer al centroide del polígono de la ESPE en lugar de al polígono completo:
+
+```{r, message = FALSE}
+
+# Calcular el centroide del polígono de la ESPE
+centroid_espe <- st_centroid(espe2)
+
+# Crear un buffer de 1 km alrededor del centroide
+buffer_centroid_espe <- st_buffer(centroid_espe, dist = 500)
+
+class(centroid_espe$Shape)
+
+```
+
+Después se muestra el buffer del centroide en un mapa:
+
+```{r, message = FALSE, fig.height=6, fig.dpi = 300}
+
+ggplot() +
+  geom_sf(data = sangolqui_4326, color = "red", size = 1) +
+  geom_sf(data = buffer_centroid_espe, fill = "yellow", alpha = 0.5) +
+  theme_minimal() +
+  ggtitle("Buffer de 0.5 km alrededor del Centroide de la ESPE") +
+  coord_sf(xlim = lon_bounds2, ylim = lat_bounds2)
+```
+
+Luego se busca identificar las zonas que contienen universidades dentro de 0.5 km en la parroquia "Sangolquí"; para lo cual se utiliza la función `st_join()` para realizar una unión espacial entre los puntos de interés (universidades) y los buffers creados alrededor de las zonas censales.
+
+```{r, message = FALSE}
+
+bbox_sangolqui <- getbb("Sangolquí, Ecuador")
+
+university <- opq(bbox = bbox_sangolqui) %>% add_osm_feature(key = "amenity", value = 
+                                       "university") %>% 
+  osmdata_sf()
+
+hospitals <- opq(bbox = bbox_sangolqui) %>% add_osm_feature(key = "amenity", value = 
+                                       "hospital") %>% 
+  osmdata_sf()
+
+university_points <- university$osm_points
+hospitals_points <- hospitals$osm_points
+
+university_points <- st_transform(university_points, crs = st_crs(sangolqui_zonas))
+
+hospitals_points <- st_transform(hospitals_points, crs = st_crs(sangolqui_zonas))
+
+# Crear buffers de 0.5 km alrededor de cada zona censal
+
+sangolqui_zonas_buffers <- st_buffer(st_centroid(sangolqui_zonas), dist = 500)
+
+# Identificar zonas con universidades en el buffer
+zones_with_university <- st_join(university_points, sangolqui_zonas_buffers, 
+                                  join = st_within)
+
+# Identificar zonas con hospitales en el buffer
+zones_with_hospitals <- st_join(hospitals_points, sangolqui_zonas_buffers, 
+                                join = st_within)
+
+```
+
+Luego se crean listas que identifican las zonas que tienen universidades u hospitales con las funciones `inner_join`(), `distinct()` y `select()` para crear listas que contienen las zonas con dichas amenidades.
+
+```{r, message = FALSE}
+
+amenidades_espe <- list(universidades = zones_with_university, hospitales = zones_with_hospitals) %>%
+  map(~.x %>% as_tibble() %>% distinct(zon))
+
+ambos <- amenidades_espe %>%
+  reduce(inner_join, by = "zon")
+
+amenidades_espe <- append(amenidades_espe, list(ambos = ambos))
+```
+
+A continuación se muestra un mapa completo que indica las zonas que tienen universidades hospitales, ambos o ninguna amenidad; para lo cual se utiliza la función `ggplot2()` para visualizar las diferentes categorías de amenidades en las zonas censales a fin de identificar visualmente las áreas que cumplen con los criterios establecidos.
+
+```{r, message = FALSE}
+
+sangolqui_zonas <- sangolqui_zonas %>%
+  mutate(
+    amenidad = case_when(
+      zon %in% amenidades_espe$ambos$zon~"Ambas",
+      zon %in% amenidades_espe$universidades$zon~"Solo Universidades",
+      zon %in% amenidades_espe$hospitales$zon~"Solo Hospitales",
+      T~"Ninguna"
+    )
+  )
+
+```
+
+Ahora se puede visualizar el gráfico:
+
+```{r, message = FALSE, fig.height=6, fig.dpi = 300}
+
+sangolqui_zonas %>% 
+ggplot() +
+  geom_sf(aes(fill = amenidad)) +
+  theme_minimal() +
+  theme(legend.position = "bottom") +
+  labs(title = "Zonas censales con universidades y hospitales en Sangolquí", fill = "Amenidad")
+```
+
+Finalmente, se hace zoom sobre el polígono de la Universidad de las Fuerzas Armadas-ESPE para mostrar cómo se ven las amenidades en esta zona específica; para lo cual se usa la función `coord_sf()` para ajustar los límites del mapa y hacer zoom en la zona de interés.
+
+```{r, message = FALSE}
+# Definir los límites del mapa para el zoom
+lon_bounds3 <- c(-78.467, -78.437)  # Ajustar según sea necesario
+lat_bounds3 <- c(-0.347, -0.317)
+
+# Transformar las coordenadas de las zonas para la visualización
+sangolqui2 <- st_transform(sangolqui_zonas, crs = 4326)
+
+buffer_espe2 <- st_buffer(st_centroid(espe2), dist = 500)
+
+```
+
+A continuación se visualiza el gráfico de la ESPE con sus respectivas amenidades:
+
+```{r, message = FALSE, fig.height=6, fig.dpi = 300}
+ggplot(sangolqui2) +
+  geom_sf(aes(fill = amenidad)) +
+  geom_sf(data = buffer_espe2, fill = "grey", alpha = 0.5) +
+  coord_sf(xlim = lon_bounds3, ylim = lat_bounds3) +
+  theme_minimal() +
+  ggtitle("Zoom sobre la ESPE y sus Amenidades")
+
+
+```
